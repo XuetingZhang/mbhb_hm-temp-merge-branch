@@ -178,7 +178,7 @@ implementation-only 且边界明确时不要输出冗长分类报告；只有非
 
 长期文档优先记录：`WHY / BOUNDARY / CONTRACT / INVARIANT / DECISION`，不要重复 private implementation details。
 
-## 8. 验证策略
+## 8. 验证策略与 CI 策略
 
 默认从便宜到昂贵：
 
@@ -198,6 +198,25 @@ contract tests
 4. scheduler/orchestration 默认 fake sampler/fake physics；不要每次跑完整 PTMCMC。
 5. physics-changing 才升级到真实 physics/long-chain/P-P 等 slow validation。
 6. bug fix 优先增加可复现该 bug 的最小回归测试。
+
+
+### 8.1 自动测试要求
+
+代码修改完成后，Agent 必须主动运行与本次改动相关的已有测试，包括适用的：
+
+```text
+contract tests
+unit tests
+integration tests
+targeted regression tests
+```
+
+若项目或子任务已经定义统一测试脚本，则优先使用该脚本。
+
+测试失败必须修复根因并重新验证；未经人类授权，禁止通过删除/跳过测试、放宽断言、降低阈值或修改 Data Contract 来获得 PASS。
+
+最终必须报告实际执行的测试命令和结果。未实际执行的测试不得声称通过。
+
 
 
 
@@ -245,7 +264,7 @@ python flow_result_checks/data_from_hdf5_to_pp_plot/pp_plot_diagnoistic.py --hdf
 3. **Route**：只读取相关 Contract / Requirement / SAD 章节和代码。
 4. **Inspect**：先理解现有实现和测试。
 5. **Implement**：做满足需求的最小改动，不顺手扩展。
-6. **Validate**：运行足以证明本次改动的最低成本测试；高风险变化升级验证。
+6. **Validate**：必须运行 `bash scripts/ci/test_fast.sh`；有专项测试时再运行对应 `test_<feature>.sh`；高风险变化升级验证。
 7. **Report**：简述修改文件、关键行为、测试结果；只有确实发生时才报告 contract/requirement/architecture change。
 
 禁止：
