@@ -439,37 +439,170 @@ coordinate_transform = "S9_to_C9_performed_by_M2"
 
 M2 只聚合符合 `DF-LIFECYCLE-DONE` 的事件。
 
-## 4.5 `DF-SCHEMA-M4-RESULT`
 
-M4 的 `results_m4.hdf5` 是独立的、按事件变长的有效样本结果。M4 输入来自 M1 `DF-SCHEMA-M1-EVENT`，其中 `post.npy` 和 `true.npy` 均为 S9；M4 不改变 M1 文件。
+## 4.5 M4 输出 Schema
+
+M4 是独立后处理阶段，只读取满足 `DF-LIFECYCLE-DONE` 的 M1 event。
+
+M4 输入来自 M1：
+
+```text
+post.npy
+true.npy
+names.npy
+````
+
+其中 `post.npy`、`true.npy` 均为 S9。M4 不修改 M1-owned 文件或 `DONE`。
+
+M4 输出分为两层：
 
 ```text
 results_m4.hdf5
-    event_summary
-    events/{event_uid}/
-        post_s9
-        true_s9
-        names_s9
-        post_c9
-        true_c9
-        names_c9
+    # batch-level ESS/convergence summary
+
+events/{event_uid}/post_ess_m4.hdf5
+    # event-level ESS/effective-sample payload
+```
+
+不同事件允许不同 `n_saved`，因此 event posterior 不聚合为固定
+`(N_events, N_samples, 9)` 数组。
+
+### 4.5.1 `DF-SCHEMA-M4-BATCH-SUMMARY`
+
+M4 batch-level 汇总文件：
+
+```text
+results_m4.hdf5
+    event_summary/
+        event_uid
+        sampling_status
+        convergence_status
         ess_theta
         tau_theta
         ess_min
         n_saved
-        sampling_status
-        convergence_status
+        source_row
+        run_event_index
+        post_ess_m4_path
+        post_c9_path
+        true_c9_path
+        names_s9
+        names_c9
 ```
+
+File attributes：
+
+```text
+schema = "DF-SCHEMA-M4-BATCH-SUMMARY"
+sampling_space = "S9_ptmcmc_internal_v1"
+physical_space = "C9_physical_v1"
+event_result_filename = "post_ess_m4.hdf5"
+```
+
+设有效 M4 event 数为 `N_events`：
+
+| dataset              |           shape | meaning                                          |
+| -------------------- | --------------: | ------------------------------------------------ |
+| `event_uid`          |   `(N_events,)` | stable event identity                            |
+| `sampling_status`    |   `(N_events,)` | M4 processing status                             |
+| `convergence_status` |   `(N_events,)` | ESS convergence status                           |
+| `ess_theta`          | `(N_events, 9)` | per-event, per-S9-dimension ESS                  |
+| `tau_theta`          | `(N_events, 9)` | per-event, per-S9-dimension autocorrelation time |
+| `ess_min`            |   `(N_events,)` | minimum ESS of each event                        |
+| `n_saved`            |   `(N_events,)` | number of selected effective posterior rows      |
+| `source_row`         |   `(N_events,)` | source HDF5 row                                  |
+| `run_event_index`    |   `(N_events,)` | batch run event index                            |
+| `post_ess_m4_path`   |   `(N_events,)` | relative path to event-level M4 result           |
+| `post_c9_path`       |   `(N_events,)` | locator of event-level `post_c9`                 |
+| `true_c9_path`       |   `(N_events,)` | locator of event-level `true_c9`                 |
+| `names_s9`           |          `(9,)` | exactly `S9_NAMES`                               |
+| `names_c9`           |          `(9,)` | exactly `C9_NAMES`                               |
 
 契约要求：
 
-- `post_s9` 是从 M1 已处理 `post.npy` 中确定性选择的联合样本行，列顺序为 `S9_NAMES`，行顺序继承 M1 采样器定义的处理后顺序；
-- `true_s9` 来源于 M1 `true.npy`，必须与 `S9_NAMES` 校验一致；
-- `post_c9` 和 `true_c9` 均通过 `DF-MAP-S9-C9` 从 S9 显式转换，列顺序为 `C9_NAMES`；
-- `ess_theta`、`tau_theta` 的每一维必须按 `S9_NAMES` 标注，`ess_min = min(ess_theta)`；
-- `n_saved = floor(ess_min)`，不同事件可以不同，禁止 NaN padding、复制样本或随机补齐；
-- `CONVERGED` / `NOT_CONVERGED` 只表示 M4 的 ESS 判据，不改变 S9/C9 语义；
-- 事件 group 只有在 payload 校验通过后才进入最终结果，M1 `DONE`、event identity 和 provenance 只读继承。
+* `event_uid` 是 batch summary 与 event-level result 的稳定对齐键；
+* `ess_theta` 和 `tau_theta` 的第二维严格对应 `S9_NAMES`；
+* `ess_min[i] = min(ess_theta[i, :])`；
+* `n_saved[i]` 与对应 event-level `post_s9` / `post_c9` 的行数一致；
+* `post_ess_m4_path` 使用相对于 batch output root 的 event result 路径；
+* `post_c9_path` / `true_c9_path` 使用 `<file-path>::<dataset-path>` locator；
+* `names_s9` / `names_c9` 是 batch-level coordinate metadata，不按 event 重复；
+* `results_m4.hdf5` 只保存 batch-level summary，不保存变长 posterior payload；
+* `results_m4.hdf5` 通过 temporary file + atomic replace 写入。
+
+### 4.5.2 `DF-SCHEMA-M4-EVENT-ESS-RESULT`
+
+每个成功处理的 M4 event 写入：
+
+```text
+events/{event_uid}/post_ess_m4.hdf5
+```
+
+File attributes：
+
+```text
+schema = "DF-SCHEMA-M4-EVENT-ESS-RESULT"
+sampling_space = "S9_ptmcmc_internal_v1"
+physical_space = "C9_physical_v1"
+event_uid
+source_file
+source_row
+run_event_index
+```
+
+Datasets：
+
+```text
+post_s9
+true_s9
+names_s9
+
+post_c9
+true_c9
+names_c9
+
+ess_theta
+tau_theta
+ess_min
+n_saved
+
+sampling_status
+convergence_status
+```
+
+| dataset              |          shape | meaning                               |
+| -------------------- | -------------: | ------------------------------------- |
+| `post_s9`            | `(n_saved, 9)` | selected joint posterior rows in S9   |
+| `true_s9`            |         `(9,)` | M1 truth in S9                        |
+| `names_s9`           |         `(9,)` | exactly `S9_NAMES`                    |
+| `post_c9`            | `(n_saved, 9)` | `post_s9` converted by `DF-MAP-S9-C9` |
+| `true_c9`            |         `(9,)` | `true_s9` converted by `DF-MAP-S9-C9` |
+| `names_c9`           |         `(9,)` | exactly `C9_NAMES`                    |
+| `ess_theta`          |         `(9,)` | per-S9-dimension ESS                  |
+| `tau_theta`          |         `(9,)` | per-S9-dimension autocorrelation time |
+| `ess_min`            |         scalar | `min(ess_theta)`                      |
+| `n_saved`            | scalar integer | `floor(ess_min)`                      |
+| `sampling_status`    |         string | M4 processing status                  |
+| `convergence_status` |         string | ESS convergence classification        |
+
+契约要求：
+
+* `post_s9` 只能从 M1 已处理 `post.npy` 中确定性选择联合样本行；
+* 所有 9 个参数必须使用相同的 selected rows，保持每行联合 posterior state；
+* posterior 行顺序继承 M1 已处理 posterior，不得按参数值重新排序；
+* `true_s9` 来源于 M1 `true.npy`，并必须与 `S9_NAMES` 校验一致；
+* `post_c9` 和 `true_c9` 必须通过 `DF-MAP-S9-C9` 显式转换；
+* `post_c9` / `true_c9` 的列顺序严格为 `C9_NAMES`；
+* `ess_theta` / `tau_theta` 每一维严格对应 `S9_NAMES`；
+* `ess_min = min(ess_theta)`；
+* `n_saved = floor(ess_min)`；
+* 不同事件允许不同 `n_saved`；
+* 禁止 NaN padding、复制样本、随机补齐或逐参数独立抽样；
+* `sampling_status=COMPLETE` 表示 M4 event-level payload 已成功生成；
+* `CONVERGED` / `NOT_CONVERGED` 只表示 M4 ESS 判据，不改变 sampling completion 状态；
+* M4 可以在 `events/{event_uid}/` 下新增 `post_ess_m4.hdf5`，但不得修改、替换或删除 M1-owned `post.npy`、`true.npy`、`names.npy`、`DONE` 或其它 M1 正式产物；
+* event-level `post_ess_m4.hdf5` 通过 temporary file + atomic replace 写入。
+
 
 ## 4.6 `DF-SCHEMA-M5-RESULT`
 
